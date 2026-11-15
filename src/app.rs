@@ -56,6 +56,7 @@ pub struct Tab {
     pub address: String,
     pub blocked: Vec<(String, Category, u32)>,
     pub fingerprint: Vec<String>,
+    pub video_ads: u32,
     pub denied: Vec<&'static str>,
     pub popups: Vec<String>,
     pub upgraded: bool,
@@ -82,6 +83,7 @@ impl Tab {
             loading: false,
             blocked: Vec::new(),
             fingerprint: Vec::new(),
+            video_ads: 0,
             denied: Vec::new(),
             popups: Vec::new(),
             upgraded: false,
@@ -132,6 +134,7 @@ impl Tab {
 #[derive(Default, Clone)]
 pub struct SessionStats {
     pub trackers: u64,
+    pub video_ads: u64,
     pub upgrades: u64,
     pub fingerprinting: u64,
     pub permissions: u64,
@@ -471,6 +474,7 @@ impl LabSphere {
     pub fn page_options(&self) -> PageOptions {
         PageOptions {
             fingerprint_guard: self.settings.fingerprint_guard,
+            video_ads: self.settings.block_video_ads,
             javascript: !self.settings.block_javascript,
             save_passwords: self.settings.save_passwords,
             autofill: self.settings.autofill,
@@ -508,10 +512,18 @@ impl LabSphere {
         if self.settings.shields_off_sites.contains(&base) {
             self.settings.shields_off_sites.retain(|s| s != &base);
         } else {
-            self.settings.shields_off_sites.push(base);
+            self.settings.shields_off_sites.push(base.clone());
         }
         self.settings_changed();
-        if let Some(p) = &self.tab().page {
+        let video_site = matches!(base.as_str(), "youtube.com" | "youtube-nocookie.com");
+        if video_site && self.settings.block_video_ads {
+            // The video-ad remover is fitted when a page view is made, so make a
+            // fresh one for this tab with the new choice.
+            let t = self.tab_mut();
+            if t.page.take().is_some() {
+                t.pending_url = Some(t.url.clone());
+            }
+        } else if let Some(p) = &self.tab().page {
             p.reload();
         }
     }
@@ -584,6 +596,7 @@ impl LabSphere {
                         t.loading = true;
                         t.blocked.clear();
                         t.fingerprint.clear();
+                        t.video_ads = 0;
                         t.denied.clear();
                         t.popups.clear();
                         t.info = None;
@@ -681,6 +694,16 @@ impl LabSphere {
                     self.session.trackers += 1;
                     self.settings.totals.trackers += 1;
                     self.dirty = true;
+                }
+                EngineEvent::VideoAd { tab, kind } => {
+                    if let Some(t) = self.find(tab) {
+                        t.video_ads += 1;
+                    }
+                    if kind != "overlay" {
+                        self.session.video_ads += 1;
+                        self.settings.totals.video_ads += 1;
+                        self.dirty = true;
+                    }
                 }
                 EngineEvent::Fingerprint { tab, kind } => {
                     let mut counted = false;
@@ -1410,6 +1433,7 @@ impl LabSphere {
             let t = self.tab();
             let total = t.blocked_total();
             stat_row(ui, Icon::Eye, "Trackers & ads blocked", total as u64);
+            stat_row(ui, Icon::Close, "Video ads removed or skipped", t.video_ads as u64);
             if !t.blocked.is_empty() {
                 egui::CollapsingHeader::new(RichText::new("Show blocked services").size(13.0).color(ui::MUTED))
                     .id_salt("blocked_list")
@@ -1482,6 +1506,7 @@ impl LabSphere {
         let s = &self.session;
         for (label, n) in [
             ("Trackers & ads blocked", s.trackers),
+            ("Video ads removed or skipped", s.video_ads),
             ("Connections made secure", s.upgrades),
             ("Fingerprinting attempts disrupted", s.fingerprinting),
             ("Permission requests blocked", s.permissions),
@@ -1706,6 +1731,7 @@ fn write_selftest(st: &SelfTest, t: &Tab, s: &SessionStats) {
         out.push_str(&format!("  blocked {} ({:?}) x{}\n", b.0, b.1, b.2));
     }
     out.push_str(&format!("fingerprint: {:?}\n", t.fingerprint));
+    out.push_str(&format!("video_ads: {}\n", t.video_ads));
     let info = match &t.info {
         Some(InfoBar::HttpsFailed { http_url }) => format!("https-failed {http_url}"),
         Some(InfoBar::Popup { url }) => format!("popup {url}"),

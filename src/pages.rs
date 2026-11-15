@@ -146,7 +146,7 @@ impl LabSphere {
         let s = &self.session;
         let t = &self.settings.totals;
         let cards = [
-            (Icon::Eye, "Trackers & ads blocked", s.trackers, t.trackers, ui::TEAL),
+            (Icon::Eye, "Trackers & ads blocked", s.trackers + s.video_ads, t.trackers + t.video_ads, ui::TEAL),
             (Icon::Lock, "Connections made secure", s.upgrades, t.upgrades, ui::GOOD),
             (Icon::Globe, "Fingerprinting attempts disrupted", s.fingerprinting, t.fingerprinting, ui::VIOLET),
             (Icon::Shield, "Permission & pop-up requests blocked", s.permissions + s.popups, t.permissions + t.popups, ui::WARN),
@@ -339,6 +339,12 @@ impl LabSphere {
                 "Block trackers and ads",
                 &format!("Stops {} known tracking, advertising and cryptomining services from loading on the sites you visit.", shields::blocklist_len()),
                 &mut s.block_trackers,
+            );
+            changed |= ui::setting_row(
+                ui,
+                "Block video ads",
+                "Removes ads from YouTube videos, skips any that slip through, hides sponsored videos and banners, and blocks the ad networks other video sites use. Applies to new tabs.",
+                &mut s.block_video_ads,
             );
             changed |= ui::setting_row(
                 ui,
@@ -591,8 +597,9 @@ impl LabSphere {
             let t = &self.settings.totals;
             ui.label(
                 RichText::new(format!(
-                    "Since you started using LabSphere: {} trackers blocked, {} connections secured, {} fingerprinting attempts disrupted.",
+                    "Since you started using LabSphere: {} trackers blocked, {} video ads removed, {} connections secured, {} fingerprinting attempts disrupted.",
                     format_count(t.trackers),
+                    format_count(t.video_ads),
                     format_count(t.upgrades),
                     format_count(t.fingerprinting)
                 ))

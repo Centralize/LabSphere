@@ -32,7 +32,8 @@ launch, and each one is explained in plain words in Settings.
 
 | Protection | What it does | Default |
 |---|---|---|
-| **Tracker & ad blocking** | Blocks 155 known advertising, analytics, social-tracking, fingerprinting and cryptomining services when they load on other sites | On |
+| **Tracker & ad blocking** | Blocks 166 known advertising, video-advertising, analytics, social-tracking, fingerprinting and cryptomining services when they load on other sites | On |
+| **Video ad blocking** | Removes ads from YouTube videos before they play, skips any that slip through, hides sponsored videos and banners, and blocks the ad networks other video sites use | On |
 | **Built-in tracking prevention** | The engine's own tracker protection (Basic / Balanced / Strict) | Strict |
 | **HTTPS-Only mode** | Upgrades every connection to encrypted HTTPS and asks before using an insecure one | On |
 | **Fingerprint guard** | Adds invisible noise to canvas, audio and graphics read-backs, reports common hardware values, hides the battery level | On |
@@ -143,6 +144,7 @@ For the site in the current tab:
 - **Shields up / down for this site** — turn blocking off for a site that
   breaks, then back on later. Sites with Shields down are listed in Settings.
 - Counts of trackers blocked (with the list of services and their category),
+  video ads removed or skipped,
   fingerprinting attempts (which details the site tried to read), permission
   requests and pop-ups.
 - **Forget this site's cookies.**
@@ -203,6 +205,25 @@ matches an entry or any subdomain of it). Visiting a listed site directly is
 never blocked, so logging in to a service still works. Blocked requests get an
 empty "403 Blocked by LabSphere Shields" answer.
 
+**Video ad blocking.** Video sites such as YouTube serve their ads from their own
+servers, so blocking by site name isn't enough. On YouTube (including embedded
+players on other sites) LabSphere:
+
+- removes the ad schedule from the player's data before the player reads it, so
+  pre-roll and mid-roll ads never start;
+- blocks YouTube's own ad and ad-measurement addresses (`/pagead/`, `/ptracking`,
+  `/api/stats/ads`, `/get_midroll_`, ad-break requests);
+- if an ad still starts, presses *Skip*, or mutes it and jumps to its end, then
+  restores your volume and speed;
+- closes overlay ads and hides sponsored videos, promoted search results,
+  banners and merchandise shelves;
+- removes "ad blockers are not allowed" pop-ups and keeps the video playing.
+
+On other video sites the common video-ad networks (FreeWheel, Innovid, SpotX,
+Connatix, Google's IMA video-ad SDK and others) are blocked by name. Each video
+ad removed or skipped is counted in the Shields panel and on the home page.
+Turning Shields down for YouTube turns all of this off for YouTube.
+
 **Built-in tracking prevention.** The engine's own tracker protection runs
 first. At *Strict* it stops many trackers before LabSphere's filter sees them —
 those are blocked but not included in LabSphere's counts, so the real number is
@@ -249,7 +270,7 @@ are removed the next time LabSphere starts.
 
 Open with Menu → **Settings** (or type `labsphere://settings`).
 
-**Shields** — Block trackers and ads · Fingerprint guard *(new tabs)* · Tell
+**Shields** — Block trackers and ads · Block video ads *(new tabs)* · Fingerprint guard *(new tabs)* · Tell
 sites not to sell or share my data · Trim cross-site referrers · Block pop-ups ·
 Prevent WebRTC IP leaks *(after restart)* · Blend into the crowd *(after restart)* ·
 Built-in tracking prevention level (Basic / Balanced / Strict).
@@ -345,6 +366,10 @@ and [wry](https://github.com/tauri-apps/wry) +
 - **History is session-only** and favicons aren't fetched (sites show a
   coloured letter instead), to avoid extra requests.
 - The tracker list is built in; it doesn't update itself yet.
+- **Video ad blocking is an ongoing contest.** YouTube changes how it delivers
+  ads often; when it does, some ads may play (LabSphere then skips them) until
+  LabSphere is updated. Ads that a streamer or creator speaks or edits into the
+  video itself can't be removed.
 
 ---
 
@@ -353,6 +378,7 @@ and [wry](https://github.com/tauri-apps/wry) +
 | Problem | What to do |
 |---|---|
 | "This page can't be shown" / engine not installed | Install the Microsoft Edge WebView2 Runtime (Evergreen) and restart LabSphere. |
+| A YouTube video won't play or shows an ad-blocker warning | Reload the page. If it persists, turn Shields down for youtube.com in the Shields panel (this also turns video ad blocking off there). |
 | A site doesn't work properly | Open the Shields panel and turn Shields down for that site, then reload. If it still fails, try turning off Fingerprint guard (applies to new tabs) or lowering tracking prevention to Balanced. |
 | Amber "doesn't offer a secure connection" bar | The site has no working HTTPS. Choose **Continue without security** only if you trust the network you're on. |
 | A site asks for the camera or microphone and nothing happens | Permissions are blocked by default. Set that permission to *Ask* in Settings → Site permissions. |

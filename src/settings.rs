@@ -89,6 +89,7 @@ pub struct Bookmark {
 #[serde(default)]
 pub struct Totals {
     pub trackers: u64,
+    pub video_ads: u64,
     pub upgrades: u64,
     pub fingerprinting: u64,
     pub permissions: u64,
@@ -100,6 +101,7 @@ pub struct Totals {
 pub struct Settings {
     // Shields
     pub block_trackers: bool,
+    pub block_video_ads: bool,
     pub tracking: Tracking,
     pub fingerprint_guard: bool,
     pub send_gpc: bool,
@@ -134,6 +136,7 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             block_trackers: true,
+            block_video_ads: true,
             tracking: Tracking::Strict,
             fingerprint_guard: true,
             send_gpc: true,

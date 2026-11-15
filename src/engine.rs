@@ -26,6 +26,7 @@ pub enum EngineEvent {
     UrlChanged { tab: u64, url: String },
     Blocked { tab: u64, host: String, category: Category },
     Fingerprint { tab: u64, kind: String },
+    VideoAd { tab: u64, kind: String },
     PermissionDenied { tab: u64, what: &'static str },
     PopupBlocked { tab: u64, url: String },
     OpenTab { from: u64, url: String },
@@ -61,6 +62,7 @@ pub struct TabShared {
 #[derive(Clone, Debug)]
 pub struct PageOptions {
     pub fingerprint_guard: bool,
+    pub video_ads: bool,
     pub javascript: bool,
     pub save_passwords: bool,
     pub autofill: bool,
@@ -195,11 +197,23 @@ mod win {
             }
             if opts.fingerprint_guard {
                 builder = builder.with_initialization_script(crate::shields::fingerprint_script(self.seed));
+            }
+            // Video ads: strip them from YouTube's player data, skip any that slip
+            // through and hide sponsored tiles (unless Shields are down for YouTube).
+            let video_ads = opts.video_ads && self.privacy.shields_up_for("www.youtube.com");
+            if video_ads {
+                builder = builder.with_initialization_script(crate::shields::video_ad_script());
+            }
+            if opts.fingerprint_guard || video_ads {
                 let n2 = n.clone();
                 builder = builder.with_ipc_handler(move |req: wry::http::Request<String>| {
+                    let clean = |s: &str| -> String {
+                        s.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(24).collect()
+                    };
                     if let Some(kind) = req.body().strip_prefix("fp:") {
-                        let kind: String = kind.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').take(24).collect();
-                        n2.send(EngineEvent::Fingerprint { tab, kind });
+                        n2.send(EngineEvent::Fingerprint { tab, kind: clean(kind) });
+                    } else if let Some(kind) = req.body().strip_prefix("ad:") {
+                        n2.send(EngineEvent::VideoAd { tab, kind: clean(kind) });
                     }
                 });
             }

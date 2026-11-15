@@ -106,6 +106,18 @@ const BLOCKLIST: &[(&str, Category)] = &[
     ("ads.pinterest.com", Ads),
     ("pagead2.googlesyndication.com", Ads),
     ("imasdk.googleapis.com", Ads),
+    // Video advertising (pre-roll and mid-roll ads on video players)
+    ("fwmrm.net", Ads),
+    ("freewheel.tv", Ads),
+    ("innovid.com", Ads),
+    ("stickyadstv.com", Ads),
+    ("aniview.com", Ads),
+    ("connatix.com", Ads),
+    ("primis.tech", Ads),
+    ("vidoomy.com", Ads),
+    ("dmxleo.com", Ads),
+    ("vi.ai", Ads),
+    ("jwpltx.com", Analytics),
     // Analytics and session recording
     ("google-analytics.com", Analytics),
     ("analytics.google.com", Analytics),
@@ -276,6 +288,7 @@ pub struct Privacy {
     pub trim_referrers: AtomicBool,
     pub block_popups: AtomicBool,
     pub blend_in: AtomicBool,
+    pub block_video_ads: AtomicBool,
     perms: [AtomicU8; 6],
     shields_off: RwLock<HashSet<String>>,
     https_exceptions: RwLock<HashSet<String>>,
@@ -318,6 +331,7 @@ impl Privacy {
             trim_referrers: AtomicBool::new(true),
             block_popups: AtomicBool::new(true),
             blend_in: AtomicBool::new(true),
+            block_video_ads: AtomicBool::new(true),
             perms: Default::default(),
             shields_off: RwLock::new(HashSet::new()),
             https_exceptions: RwLock::new(HashSet::new()),
@@ -333,6 +347,7 @@ impl Privacy {
         self.trim_referrers.store(s.trim_referrers, Ordering::Relaxed);
         self.block_popups.store(s.block_popups, Ordering::Relaxed);
         self.blend_in.store(s.blend_in_user_agent, Ordering::Relaxed);
+        self.block_video_ads.store(s.block_video_ads, Ordering::Relaxed);
         let modes = [
             s.perm_camera,
             s.perm_microphone,
@@ -388,7 +403,17 @@ impl Privacy {
         };
         let page_host = host_of(page_url).unwrap_or_default();
         let third_party = !page_host.is_empty() && base_domain(&req_host) != base_domain(&page_host);
-        if is_main_document || !third_party {
+        if is_main_document {
+            return Decision::Allow { third_party };
+        }
+        // Video sites serve their ad requests from their own domain, so these are
+        // matched by address even when they're first-party.
+        if self.block_video_ads.load(Ordering::Relaxed) && self.shields_up_for(&page_host) {
+            if let Some(label) = video_ad_rule(&req_host, request_url) {
+                return Decision::Block { host: label, category: Category::Ads };
+            }
+        }
+        if !third_party {
             return Decision::Allow { third_party };
         }
         if !self.block_trackers.load(Ordering::Relaxed) || !self.shields_up_for(&page_host) {
@@ -412,6 +437,151 @@ impl Privacy {
         Some(format!("https://{}", &url["http://".len()..]))
     }
 }
+
+/// Ad requests that video sites send to their own servers: (host suffix, path prefix).
+const VIDEO_AD_PATHS: &[(&str, &str)] = &[
+    ("youtube.com", "/api/stats/ads"),
+    ("youtube.com", "/pagead/"),
+    ("youtube.com", "/ptracking"),
+    ("youtube.com", "/get_midroll_"),
+    ("youtube.com", "/youtubei/v1/player/ad_break"),
+    ("youtube.com", "/pcs/activeview"),
+    ("youtube-nocookie.com", "/api/stats/ads"),
+    ("youtube-nocookie.com", "/pagead/"),
+    ("youtube-nocookie.com", "/ptracking"),
+    ("youtube-nocookie.com", "/youtubei/v1/player/ad_break"),
+];
+
+/// A label for `url` when it's a known video-ad request, else None.
+pub fn video_ad_rule(host: &str, url: &str) -> Option<String> {
+    let rest = url.split_once("://").map(|(_, r)| r)?;
+    let path = rest.find('/').map(|i| &rest[i..]).unwrap_or("/");
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    VIDEO_AD_PATHS
+        .iter()
+        .find(|(h, p)| (host == *h || host.ends_with(&format!(".{h}"))) && path.starts_with(p))
+        .map(|(h, p)| format!("{h}{} (video ad)", p.trim_end_matches('/')))
+}
+
+/// Runs in YouTube pages and embedded players before YouTube's own code:
+/// removes the ad schedule from the player's data, skips and mutes any ad
+/// that still starts, closes overlay ads and hides sponsored tiles and banners.
+pub fn video_ad_script() -> String {
+    VIDEO_AD_SCRIPT.to_string()
+}
+
+const VIDEO_AD_SCRIPT: &str = r#"(() => {
+  'use strict';
+  if (!/(^|\.)(youtube\.com|youtube-nocookie\.com)$/.test(location.hostname)) return;
+  const last = Object.create(null);
+  const report = (kind) => {
+    const now = Date.now();
+    if (last[kind] && now - last[kind] < 4000) return;
+    last[kind] = now;
+    try { if (window.ipc && window.ipc.postMessage) window.ipc.postMessage('ad:' + kind); } catch (e) {}
+  };
+
+  // 1. Take the ads out of the player's data before the player reads it.
+  const AD_KEYS = ['adPlacements', 'playerAds', 'adSlots', 'adBreakHeartbeatParams', 'adBreakParams'];
+  const prune = (o, depth) => {
+    let n = 0;
+    if (!o || typeof o !== 'object' || depth > 2) return 0;
+    for (const k of AD_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(o, k)) {
+        const v = o[k];
+        if (!(Array.isArray(v) && v.length === 0)) n++;
+        try { delete o[k]; } catch (e) {}
+      }
+    }
+    if (o.playerResponse) n += prune(o.playerResponse, depth + 1);
+    if (Array.isArray(o)) for (const x of o) n += prune(x, depth + 1);
+    return n;
+  };
+  const check = (v) => { try { if (prune(v, 0) > 0) report('removed'); } catch (e) {} return v; };
+
+  const origParse = JSON.parse;
+  JSON.parse = function (text, reviver) { return check(origParse.call(this, text, reviver)); };
+  try { Object.defineProperty(JSON.parse, 'toString', { value: () => 'function parse() { [native code] }' }); } catch (e) {}
+
+  const origJson = Response.prototype.json;
+  Response.prototype.json = function () { return origJson.call(this).then(check); };
+
+  for (const name of ['ytInitialPlayerResponse', 'playerResponse']) {
+    try {
+      let value;
+      Object.defineProperty(window, name, {
+        configurable: true,
+        get() { return value; },
+        set(v) { value = check(v); },
+      });
+    } catch (e) {}
+  }
+
+  // 2. Hide sponsored tiles, banners and ad slots.
+  const CSS = `
+    #masthead-ad, #player-ads, #panels > ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"],
+    .ytp-ad-overlay-container, .ytp-ad-image-overlay, .ytp-ad-text-overlay, .ytp-featured-product,
+    ytd-ad-slot-renderer, ytd-in-feed-ad-layout-renderer, ytd-promoted-sparkles-web-renderer,
+    ytd-promoted-sparkles-text-search-renderer, ytd-display-ad-renderer, ytd-promoted-video-renderer,
+    ytd-compact-promoted-video-renderer, ytd-banner-promo-renderer, ytd-video-masthead-ad-v3-renderer,
+    ytd-primetime-promo-renderer, ytd-player-legacy-desktop-watch-ads-renderer, ytd-merch-shelf-renderer,
+    ytd-search-pyv-renderer, ytd-action-companion-ad-renderer, ytd-companion-slot-renderer,
+    ytd-rich-item-renderer:has(ytd-ad-slot-renderer), ytd-rich-section-renderer:has(ytd-statement-banner-renderer),
+    ytm-promoted-sparkles-web-renderer, ytm-companion-ad-renderer, ad-slot-renderer,
+    tp-yt-paper-dialog:has(ytd-enforcement-message-view-model) { display: none !important; }`;
+  let styled = false;
+  const ensureStyle = () => {
+    if (styled || !document.documentElement) return;
+    const s = document.createElement('style');
+    s.textContent = CSS;
+    (document.head || document.documentElement).appendChild(s);
+    styled = true;
+  };
+  document.addEventListener('DOMContentLoaded', ensureStyle);
+
+  // 3. If an ad still starts: skip it, or mute it and jump to its end.
+  let inAd = false, savedMuted = false, savedRate = 1;
+  const SKIP = '.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-ad-skip-button-slot button, .ytp-ad-skip-button-container button';
+  const tick = () => {
+    ensureStyle();
+    if (window.top !== window && !/\/embed\//.test(location.pathname)) return;
+    const player = document.querySelector('#movie_player, .html5-video-player');
+    if (!player) return;
+    const video = player.querySelector('video');
+    const showing = player.classList.contains('ad-showing') || player.classList.contains('ad-interrupting');
+    if (showing && video) {
+      if (!inAd) {
+        inAd = true;
+        savedMuted = video.muted;
+        savedRate = video.playbackRate || 1;
+        report('skipped');
+      }
+      const skip = player.querySelector(SKIP);
+      if (skip) skip.click();
+      video.muted = true;
+      if (isFinite(video.duration) && video.duration > 0 && video.currentTime < video.duration - 0.2) {
+        video.currentTime = video.duration - 0.1;
+      }
+      if (video.playbackRate < 16) video.playbackRate = 16;
+    } else if (inAd && video) {
+      inAd = false;
+      video.muted = savedMuted;
+      video.playbackRate = savedRate;
+    }
+    const close = document.querySelector('.ytp-ad-overlay-close-button');
+    if (close) { close.click(); report('overlay'); }
+    // "Ad blockers are not allowed" walls: remove them and keep the video playing.
+    const wall = document.querySelector('ytd-enforcement-message-view-model');
+    if (wall) {
+      const dialog = wall.closest('tp-yt-paper-dialog');
+      (dialog || wall).remove();
+      document.querySelectorAll('tp-yt-iron-overlay-backdrop').forEach((b) => b.remove());
+      if (video && video.paused) video.play().catch(() => {});
+      report('wall');
+    }
+  };
+  setInterval(tick, 300);
+})();"#;
 
 /// Chromium brand list without the embedded-engine entry, so the browser looks
 /// like plain Chromium rather than a rarer embedded build.
@@ -589,6 +759,14 @@ mod tests {
         ));
         assert_eq!(p.upgrade("http://example.com/a").as_deref(), Some("https://example.com/a"));
         assert!(p.upgrade("http://localhost:3000/").is_none());
+        assert!(matches!(
+            p.decide("https://www.youtube.com/api/stats/ads?ver=2", "https://www.youtube.com/watch?v=x", false),
+            Decision::Block { .. }
+        ));
+        assert!(matches!(
+            p.decide("https://www.youtube.com/youtubei/v1/player?key=1", "https://www.youtube.com/watch?v=x", false),
+            Decision::Allow { .. }
+        ));
         assert_eq!(
             generic_brands(r#""Chromium";v="157", "Microsoft Edge WebView2";v="157", "Not?A_Brand";v="99""#),
             r#""Chromium";v="157", "Not?A_Brand";v="99""#
